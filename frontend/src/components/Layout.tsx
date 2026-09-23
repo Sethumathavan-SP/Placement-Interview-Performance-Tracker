@@ -3,15 +3,23 @@ import { useAuth, type UserRole } from '../context/AuthContext';
 
 const NAV_BY_ROLE: Record<UserRole, { name: string; path: string }[]> = {
   coordinator: [
+    { name: 'Dashboard', path: '/dashboard' },
     { name: 'Access Management', path: '/coordinator/access' },
+    { name: 'Drives', path: '/drives' },
+    { name: 'Students', path: '/students' },
+    { name: 'Results', path: '/results' },
+    { name: 'Analytics', path: '/analytics' },
     { name: 'Interventions', path: '/interventions' },
   ],
   mentor: [
     { name: 'Mentor Dashboard', path: '/mentor/dashboard' },
+    { name: 'Students', path: '/students' },
     { name: 'Interventions', path: '/interventions' },
   ],
   student: [
+    { name: 'Dashboard', path: '/dashboard' },
     { name: 'My Interventions', path: '/interventions' },
+    { name: 'Applications', path: '/applications' },
   ],
 };
 
