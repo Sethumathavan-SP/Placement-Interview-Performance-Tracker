@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.enums import InterventionStatus
-from app.models import Intervention, InterventionAction, Student, Coordinator
+from app.models import Intervention, InterventionAction, Student, Coordinator, Mentor, Mentor
 from app.schemas.intervention import (
     ActionStatusUpdate,
     AtRiskStudentOut,
@@ -64,6 +64,65 @@ def create_intervention(student_id: str, body: InterventionCreate, db: Session =
     db.commit()
     db.refresh(intervention)
     return intervention
+
+
+@router.get("/coordinators")
+def list_coordinators(db: Session = Depends(get_db)):
+    rows = db.query(Coordinator).all()
+    return [
+        {"coordinator_id": c.coordinator_id, "name": c.name, "department": c.department}
+        for c in rows
+    ]
+
+
+@router.get("/mentors")
+def list_mentors(db: Session = Depends(get_db)):
+    rows = db.query(Mentor).all()
+    return [
+        {
+            "mentor_id": m.mentor_id,
+            "name": m.name,
+            "department": m.department,
+            "specialization": m.specialization,
+        }
+        for m in rows
+    ]
+
+
+@router.get("/mentor/{mentor_id}", response_model=list[InterventionOut])
+def list_mentor_interventions(mentor_id: str, db: Session = Depends(get_db)):
+    mentor = db.query(Mentor).filter(Mentor.mentor_id == mentor_id).first()
+    if not mentor:
+        raise HTTPException(status_code=404, detail="Mentor not found")
+    assigned_intervention_ids = (
+        db.query(InterventionAction.intervention_id)
+        .filter(InterventionAction.assigned_to == mentor_id)
+        .distinct()
+        .subquery()
+    )
+    interventions = (
+        db.query(Intervention)
+        .filter(
+            (Intervention.mentor_id == mentor_id)
+            | Intervention.intervention_id.in_(assigned_intervention_ids)
+        )
+        .order_by(Intervention.created_at.desc())
+        .all()
+    )
+    return interventions
+
+
+@router.get("/student/{student_id}/interventions", response_model=list[InterventionOut])
+def list_student_interventions(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    return (
+        db.query(Intervention)
+        .filter(Intervention.student_id == student_id)
+        .order_by(Intervention.created_at.desc())
+        .all()
+    )
 
 
 @router.get("/at-risk", response_model=list[AtRiskStudentOut])

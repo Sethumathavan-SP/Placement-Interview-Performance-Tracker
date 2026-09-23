@@ -1,19 +1,37 @@
-
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { useAuth, type UserRole } from '../context/AuthContext';
 
-const navItems = [
-  { name: 'Dashboard', path: '/dashboard' },
-  { name: 'Access Management', path: '/coordinator/access' },
-  { name: 'Drives', path: '/drives' },
-  { name: 'Students', path: '/students' },
-  { name: 'Results', path: '/results' },
-  { name: 'Analytics', path: '/analytics' },
-  { name: 'Interventions', path: '/interventions' },
-  { name: 'Mentor Dashboard', path: '/mentor/dashboard' },
-];
+const NAV_BY_ROLE: Record<UserRole, { name: string; path: string }[]> = {
+  coordinator: [
+    { name: 'Access Management', path: '/coordinator/access' },
+    { name: 'Interventions', path: '/interventions' },
+  ],
+  mentor: [
+    { name: 'Mentor Dashboard', path: '/mentor/dashboard' },
+    { name: 'Interventions', path: '/interventions' },
+  ],
+  student: [
+    { name: 'My Interventions', path: '/interventions' },
+  ],
+};
+
+const ROLE_COLORS: Record<UserRole, { bg: string; text: string }> = {
+  coordinator: { bg: 'bg-indigo-600', text: 'C' },
+  mentor: { bg: 'bg-emerald-600', text: 'M' },
+  student: { bg: 'bg-amber-600', text: 'S' },
+};
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  coordinator: 'Placement Coordinator',
+  mentor: 'Mentor',
+  student: 'Student',
+};
 
 export const Layout = () => {
   const location = useLocation();
+  const { user, switchRole } = useAuth();
+  const navItems = NAV_BY_ROLE[user.role];
+  const roleColor = ROLE_COLORS[user.role];
 
   return (
     <div className="min-h-screen bg-slate-50 flex font-sans text-slate-800">
@@ -27,7 +45,7 @@ export const Layout = () => {
           </div>
           <span className="font-semibold text-lg text-slate-900 tracking-tight">Placement Portal</span>
         </div>
-        
+
         <nav className="flex-1 px-3 py-4 space-y-1">
           {navItems.map((item) => {
             const isActive = location.pathname.startsWith(item.path);
@@ -36,12 +54,11 @@ export const Layout = () => {
                 key={item.name}
                 to={item.path}
                 className={`flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive 
-                    ? 'bg-blue-50 text-blue-700' 
+                  isActive
+                    ? 'bg-blue-50 text-blue-700'
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                {/* Generic icon */}
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-4 h-4 mr-3 ${isActive ? 'text-blue-600' : 'text-slate-400'}`}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
                 </svg>
@@ -51,14 +68,36 @@ export const Layout = () => {
           })}
         </nav>
 
+        {/* Role Switcher */}
+        <div className="px-3 py-3 border-t border-slate-200">
+          <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2 px-1">
+            Switch Role (Demo)
+          </label>
+          <div className="flex gap-1">
+            {(['coordinator', 'mentor', 'student'] as UserRole[]).map((r) => (
+              <button
+                key={r}
+                onClick={() => switchRole(r)}
+                className={`flex-1 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  user.role === r
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {r.charAt(0).toUpperCase() + r.slice(1, 6)}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="p-4 border-t border-slate-200">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold text-sm">
-              C
+            <div className={`w-8 h-8 rounded-full ${roleColor.bg} text-white flex items-center justify-center font-semibold text-sm`}>
+              {roleColor.text}
             </div>
             <div>
-              <div className="text-sm font-semibold text-slate-900">Coordinator</div>
-              <div className="text-xs text-slate-500">Placement Coordinator</div>
+              <div className="text-sm font-semibold text-slate-900">{user.name}</div>
+              <div className="text-xs text-slate-500">{ROLE_LABELS[user.role]}</div>
             </div>
           </div>
         </div>
@@ -74,14 +113,11 @@ export const Layout = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
               </svg>
             </button>
-            <div className="flex items-center gap-2 cursor-pointer">
-              <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold text-sm">
-                C
+            <div className="flex items-center gap-2">
+              <div className={`w-8 h-8 rounded-full ${roleColor.bg} text-white flex items-center justify-center font-semibold text-sm`}>
+                {roleColor.text}
               </div>
-              <span className="text-sm font-medium text-slate-700 hidden sm:block">Coordinator</span>
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-slate-400 hidden sm:block">
-                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-              </svg>
+              <span className="text-sm font-medium text-slate-700 hidden sm:block">{user.name}</span>
             </div>
           </div>
         </header>
