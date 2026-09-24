@@ -28,4 +28,5 @@ class Intervention(Base):
 
     student: Mapped["Student"] = relationship(back_populates="interventions")
     coordinator: Mapped["Coordinator"] = relationship(back_populates="interventions")
+    mentor: Mapped["Mentor | None"] = relationship(back_populates="interventions", foreign_keys=[mentor_id])
     actions: Mapped[list["InterventionAction"]] = relationship(back_populates="intervention", cascade="all, delete-orphan")

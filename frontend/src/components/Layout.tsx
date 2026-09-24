@@ -9,6 +9,7 @@ const navItems = [
   { name: 'Results', path: '/results' },
   { name: 'Analytics', path: '/analytics' },
   { name: 'Interventions', path: '/interventions' },
+  { name: 'Mentor Dashboard', path: '/mentor/dashboard' },
 ];
 
 export const Layout = () => {

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, engine, Base
 from app.enums import CompanyType, DriveStatus, Result, RoundType
 from app.models import (
-    Student, Coordinator, Mentor, Drive, Round,
+    Student, Coordinator, Mentor, MentorStudent, Drive, Round,
     RoundResult, StudentDriveRegistration,
 )
 
@@ -20,28 +20,28 @@ def seed_database(db: Session) -> None:
         print("Database already seeded, skipping.")
         return
 
-    # --- Coordinator ---
+    # --- Coordinator (fixed ID for frontend) ---
     coord = Coordinator(
-        coordinator_id=_id(),
+        coordinator_id="coord-001",
         name="Dr. Priya Kumar",
         email="priya@college.edu",
         department="CSE",
     )
     db.add(coord)
 
-    # --- Mentors ---
+    # --- Mentors (fixed IDs for frontend) ---
     mentor_dsa = Mentor(
-        mentor_id=_id(), name="Prof. Arun Raj", email="arun@college.edu",
+        mentor_id="mentor-dsa-001", name="Prof. Arun Raj", email="arun@college.edu",
         department="CSE", specialization="Data Structures & Algorithms",
         max_mentees=10, current_mentee_count=3,
     )
     mentor_sys = Mentor(
-        mentor_id=_id(), name="Prof. Meena Iyer", email="meena@college.edu",
+        mentor_id="mentor-sys-001", name="Prof. Meena Iyer", email="meena@college.edu",
         department="CSE", specialization="System Design & OOPS",
         max_mentees=8, current_mentee_count=2,
     )
     mentor_soft = Mentor(
-        mentor_id=_id(), name="Prof. Karthik Nair", email="karthik@college.edu",
+        mentor_id="mentor-soft-001", name="Prof. Karthik Nair", email="karthik@college.edu",
         department="CSE", specialization="Communication & Soft Skills",
         max_mentees=12, current_mentee_count=5,
     )
@@ -270,6 +270,22 @@ def seed_database(db: Session) -> None:
     add_result(divya, drive_zoho, 3, Result.PASSED)
     add_result(divya, drive_zoho, 4, Result.FAILED, None, None, "Could not handle design pattern questions", "Needs more practice with real-world architecture", "Design Patterns")
     add_reg(divya, drive_zoho, "REJECTED", 3)
+
+    # --- Mentor-Student Assignments ---
+    # Prof. Arun (DSA) mentors students who struggle with coding
+    for s in [rahul, deepa, divya, priya_s]:
+        db.add(MentorStudent(id=_id(), mentor_id=mentor_dsa.mentor_id, student_id=s.student_id))
+    mentor_dsa.current_mentee_count = 4 + 3  # 3 existing + 4 new
+
+    # Prof. Meena (System Design) mentors technical-failure students
+    for s in [deepa, manoj, vikram]:
+        db.add(MentorStudent(id=_id(), mentor_id=mentor_sys.mentor_id, student_id=s.student_id))
+    mentor_sys.current_mentee_count = 2 + 3
+
+    # Prof. Karthik (Soft Skills) mentors HR-failure and all-round students
+    for s in [arjun, kiran, sneha, ananya]:
+        db.add(MentorStudent(id=_id(), mentor_id=mentor_soft.mentor_id, student_id=s.student_id))
+    mentor_soft.current_mentee_count = 5 + 4
 
     db.commit()
     print(f"Seeded: {db.query(Student).count()} students, {db.query(Drive).count()} drives, {db.query(RoundResult).count()} round results")

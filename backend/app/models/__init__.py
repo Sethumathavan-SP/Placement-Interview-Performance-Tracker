@@ -1,6 +1,8 @@
 from app.models.student import Student
 from app.models.coordinator import Coordinator
 from app.models.mentor import Mentor
+from app.models.mentor_student import MentorStudent
+from app.models.mentor_note import MentorNote
 from app.models.drive import Drive
 from app.models.round import Round
 from app.models.round_result import RoundResult
@@ -16,6 +18,8 @@ __all__ = [
     "Student",
     "Coordinator",
     "Mentor",
+    "MentorStudent",
+    "MentorNote",
     "Drive",
     "Round",
     "RoundResult",

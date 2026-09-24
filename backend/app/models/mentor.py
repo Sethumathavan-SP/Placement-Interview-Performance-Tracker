@@ -1,8 +1,7 @@
-"""Dummy model — replace when Team A builds the real Mentor entity."""
 import uuid
 
 from sqlalchemy import Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -17,3 +16,9 @@ class Mentor(Base):
     specialization: Mapped[str | None] = mapped_column(String(100), nullable=True)
     max_mentees: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     current_mentee_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    mentee_assignments: Mapped[list["MentorStudent"]] = relationship(back_populates="mentor", cascade="all, delete-orphan")
+    interventions: Mapped[list["Intervention"]] = relationship(
+        back_populates="mentor",
+        foreign_keys="[Intervention.mentor_id]",
+    )

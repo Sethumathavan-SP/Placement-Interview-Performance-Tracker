@@ -29,3 +29,4 @@ class Student(Base):
     registrations: Mapped[list["StudentDriveRegistration"]] = relationship(back_populates="student")
     interventions: Mapped[list["Intervention"]] = relationship(back_populates="student")
     status: Mapped["Status"] = relationship()
+    mentor_assignments: Mapped[list["MentorStudent"]] = relationship(back_populates="student")

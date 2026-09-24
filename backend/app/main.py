@@ -26,11 +26,13 @@ app.add_middleware(
 from app.routers.intervention import router as intervention_router
 from app.routers.access import router as access_router
 from app.routers.student import router as student_router
+from app.routers.mentor import router as mentor_router
 from app.routers.department import router as department_router
 
 app.include_router(intervention_router)
 app.include_router(access_router)
 app.include_router(student_router)
+app.include_router(mentor_router)
 app.include_router(department_router)
 
 
