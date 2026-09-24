@@ -17,6 +17,8 @@ import {
   getMentorInterventions,
   getMenteeRounds,
   updateActionProgress,
+  createIntervention,
+  getCoordinators,
   getMentorMetrics,
   getStudentDetail,
   createNote,
@@ -75,6 +77,10 @@ export const MentorDashboard = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [showDetailPanel, setShowDetailPanel] = useState(false);
 
+  const [coordinatorId, setCoordinatorId] = useState<string | null>(null);
+  const [generating, setGenerating] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+
   useEffect(() => {
     listMentors()
       .then((mentors) => {
@@ -90,11 +96,13 @@ export const MentorDashboard = () => {
           getMentees(id),
           getPlacedMentees(id),
           getMentorInterventions(id),
-        ]).then(([d, m, p, i]) => {
+          getCoordinators(),
+        ]).then(([d, m, p, i, coords]) => {
           setDashboard(d);
           setMentees(m);
           setPlacedMentees(p);
           setInterventions(i);
+          if (coords.length > 0) setCoordinatorId(coords[0].coordinatorId);
         });
       })
       .catch((err) => setError(err.message || 'Failed to connect to backend'))
@@ -158,6 +166,30 @@ export const MentorDashboard = () => {
   const handleCloseDetail = () => {
     setShowDetailPanel(false);
     setStudentDetail(null);
+  };
+
+  const handleCreateIntervention = async (studentId: string) => {
+    if (!mentorId || !coordinatorId) return;
+    setGenerating(studentId);
+    setGenerationError(null);
+    try {
+      const newIntv = await createIntervention(mentorId, studentId, coordinatorId);
+      setInterventions((prev) => [newIntv, ...prev]);
+      if (dashboard) {
+        setDashboard({ ...dashboard, activeInterventions: dashboard.activeInterventions + 1 });
+      }
+      if (studentDetail && studentDetail.studentId === studentId) {
+        setStudentDetail({
+          ...studentDetail,
+          interventions: [newIntv, ...studentDetail.interventions],
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to generate intervention';
+      setGenerationError(msg);
+      setTimeout(() => setGenerationError(null), 6000);
+    }
+    setGenerating(null);
   };
 
   const handleNoteCreated = (note: MentorNote) => {
@@ -287,12 +319,16 @@ export const MentorDashboard = () => {
       {activeTab === 'interventions' && (
         <InterventionsTab
           interventions={interventions}
+          mentees={mentees}
           expandedId={expandedIntv}
           onToggleExpand={(id) => setExpandedIntv(expandedIntv === id ? null : id)}
           updatingAction={updatingAction}
           noteInput={actionNoteInput}
           onNoteChange={(actionId, val) => setActionNoteInput((prev) => ({ ...prev, [actionId]: val }))}
           onToggleAction={handleToggleAction}
+          onCreateIntervention={handleCreateIntervention}
+          generating={generating}
+          generationError={generationError}
         />
       )}
       {activeTab === 'metrics' && <MetricsTab metrics={metrics} loading={metricsLoading} />}
@@ -307,6 +343,9 @@ export const MentorDashboard = () => {
           onNoteCreated={handleNoteCreated}
           onNoteUpdated={handleNoteUpdated}
           onNoteDeleted={handleNoteDeleted}
+          onCreateIntervention={handleCreateIntervention}
+          generating={generating}
+          generationError={generationError}
         />
       )}
     </div>
@@ -626,93 +665,239 @@ function PlacedTab({ placed }: { placed: PlacedMentee[] }) {
 /* ────────────────────────── Interventions Tab ────────────────────────── */
 
 function InterventionsTab({
-  interventions, expandedId, onToggleExpand, updatingAction, noteInput, onNoteChange, onToggleAction,
+  interventions, mentees, expandedId, onToggleExpand, updatingAction, noteInput, onNoteChange, onToggleAction,
+  onCreateIntervention, generating, generationError,
 }: {
   interventions: MentorIntervention[];
+  mentees: Mentee[];
   expandedId: string | null;
   onToggleExpand: (id: string) => void;
   updatingAction: string | null;
   noteInput: Record<string, string>;
   onNoteChange: (actionId: string, val: string) => void;
   onToggleAction: (interventionId: string, actionId: string, completed: boolean) => void;
+  onCreateIntervention: (studentId: string) => void;
+  generating: string | null;
+  generationError: string | null;
 }) {
-  if (interventions.length === 0) {
-    return <div className="bg-white rounded-xl border border-slate-200 p-12 text-center"><p className="text-slate-500">No interventions assigned yet.</p></div>;
-  }
+  const [filterStatus, setFilterStatus] = useState<string>('ALL');
+  const [filterPriority, setFilterPriority] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showNeedingPlans, setShowNeedingPlans] = useState(true);
+
+  const studentIdsWithPlans = new Set(interventions.map((i) => i.studentId));
+  const studentsNeedingPlans = mentees.filter((m) => !studentIdsWithPlans.has(m.studentId));
+
+  const filtered = interventions.filter((intv) => {
+    if (filterStatus !== 'ALL' && intv.status !== filterStatus) return false;
+    if (filterPriority !== 'ALL' && intv.priority !== filterPriority) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      if (!intv.studentName?.toLowerCase().includes(q) && !intv.triggerReason.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
   return (
-    <div className="space-y-4">
-      {interventions.map((intv) => {
-        const isExpanded = expandedId === intv.interventionId;
-        const completedActions = intv.actions.filter((a) => a.isCompleted).length;
-        const totalActions = intv.actions.length;
-        const progress = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : 0;
-        return (
-          <div key={intv.interventionId} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <button onClick={() => onToggleExpand(intv.interventionId)} className="w-full px-6 py-4 text-left hover:bg-slate-50/50 transition-colors">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-base font-semibold text-slate-900">{intv.studentName}</span>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${priorityStyle[intv.priority] || 'bg-slate-100'}`}>{intv.priority}</span>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusStyle[intv.status] || 'bg-slate-100'}`}>{intv.status.replace('_', ' ')}</span>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900">Student Performance Analysis</h2>
+        <p className="text-sm text-slate-500 mt-1">AI-powered analysis of student placement performance with personalized recommendations.</p>
+      </div>
+
+      {generationError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+          {generationError}
+        </div>
+      )}
+      {generating && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-700 flex items-center gap-2">
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-600" />
+          Running AI analysis... This may take a few seconds.
+        </div>
+      )}
+
+      {studentsNeedingPlans.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <button
+            onClick={() => setShowNeedingPlans(!showNeedingPlans)}
+            className="w-full px-5 py-4 text-left flex items-center justify-between hover:bg-slate-50/50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-900">Pending Analysis</h3>
+              <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">{studentsNeedingPlans.length}</span>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={`w-5 h-5 text-slate-400 transition-transform ${showNeedingPlans ? 'rotate-180' : ''}`}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+            </svg>
+          </button>
+          {showNeedingPlans && (
+            <div className="border-t border-slate-200 divide-y divide-slate-100">
+              {studentsNeedingPlans.map((m) => (
+                <div key={m.studentId} className="px-5 py-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-slate-900">{m.name}</div>
+                    <div className="text-xs text-slate-500">{m.registerNumber} &middot; CGPA: {m.cgpa}</div>
                   </div>
-                  <p className="text-sm text-slate-500 mt-1">{intv.triggerReason}</p>
-                  <div className="mt-2 flex items-center gap-3">
-                    <div className="flex-1 max-w-xs bg-slate-100 rounded-full h-2"><div className="bg-blue-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} /></div>
-                    <span className="text-xs text-slate-500">{completedActions}/{totalActions} actions</span>
-                  </div>
+                  <button
+                    onClick={() => onCreateIntervention(m.studentId)}
+                    disabled={generating === m.studentId}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    {generating === m.studentId ? (
+                      <span className="flex items-center gap-1.5">
+                        <span className="animate-spin inline-block rounded-full h-3 w-3 border-b-2 border-white" />
+                        Analyzing...
+                      </span>
+                    ) : 'Run Analysis'}
+                  </button>
                 </div>
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={`w-5 h-5 text-slate-400 transition-transform flex-shrink-0 ml-4 ${isExpanded ? 'rotate-180' : ''}`}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-                </svg>
-              </div>
-            </button>
-            {isExpanded && (
-              <div className="border-t border-slate-200">
-                <div className="px-6 py-4 bg-blue-50/50">
-                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">AI Analysis</h4>
-                  <p className="text-sm text-slate-700">{intv.aiAnalysis}</p>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {intv.actions.map((action) => (
-                    <div key={action.actionId} className="px-6 py-4">
-                      <div className="flex items-start gap-3">
-                        <button disabled={updatingAction === action.actionId} onClick={() => onToggleAction(intv.interventionId, action.actionId, !action.isCompleted)}
-                          className={`mt-0.5 flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${action.isCompleted ? 'bg-green-500 border-green-500 text-white' : 'border-slate-300 hover:border-blue-400'} ${updatingAction === action.actionId ? 'opacity-50' : ''}`}>
-                          {action.isCompleted && <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>}
-                        </button>
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-sm font-semibold ${action.isCompleted ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{action.title}</span>
-                            <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{action.actionType}</span>
-                          </div>
-                          <p className="text-sm text-slate-500 mt-0.5">{action.description}</p>
-                          <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
-                            <span>Target: {action.targetWeakness}</span>
-                            {action.dueDate && <span>Due: {action.dueDate}</span>}
-                          </div>
-                          {action.resources && action.resources.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {action.resources.map((r, i) => <a key={i} href={r} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">Resource {i + 1}</a>)}
-                            </div>
-                          )}
-                          {action.notes && <p className="text-xs text-green-600 mt-2">Notes: {action.notes}</p>}
-                          {!action.isCompleted && (
-                            <div className="mt-2">
-                              <input type="text" placeholder="Add notes before completing..." value={noteInput[action.actionId] || ''} onChange={(e) => onNoteChange(action.actionId, e.target.value)}
-                                className="w-full max-w-md text-xs border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:border-blue-400" />
-                            </div>
-                          )}
-                        </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <input
+            type="text"
+            placeholder="Search by student name..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-4 pr-10 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+          </svg>
+        </div>
+        <select
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value)}
+          className="text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 bg-white"
+        >
+          <option value="ALL">All Statuses</option>
+          <option value="GENERATED">Generated</option>
+          <option value="PENDING_REVIEW">Pending Review</option>
+          <option value="APPROVED">Approved</option>
+          <option value="IN_PROGRESS">In Progress</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="DISMISSED">Dismissed</option>
+        </select>
+        <select
+          value={filterPriority}
+          onChange={(e) => setFilterPriority(e.target.value)}
+          className="text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 bg-white"
+        >
+          <option value="ALL">All Priorities</option>
+          <option value="CRITICAL">Critical</option>
+          <option value="HIGH">High</option>
+          <option value="MEDIUM">Medium</option>
+          <option value="LOW">Low</option>
+        </select>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+          <p className="text-slate-500">
+            {interventions.length === 0
+              ? 'No analyses yet. Run analysis for students from the Pending Analysis section above.'
+              : 'No results match the current filters.'}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filtered.map((intv) => {
+            const isExpanded = expandedId === intv.interventionId;
+            const completedActions = intv.actions.filter((a) => a.isCompleted).length;
+            const totalActions = intv.actions.length;
+            const progress = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : 0;
+            return (
+              <div key={intv.interventionId} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="px-6 py-4">
+                  <div className="flex items-start justify-between">
+                    <button onClick={() => onToggleExpand(intv.interventionId)} className="flex-1 text-left hover:opacity-80 transition-opacity">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-base font-semibold text-slate-900">{intv.studentName}</span>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${priorityStyle[intv.priority] || 'bg-slate-100'}`}>{intv.priority}</span>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusStyle[intv.status] || 'bg-slate-100'}`}>{intv.status.replace('_', ' ')}</span>
+                        <span className="text-xs text-slate-400">{new Date(intv.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                       </div>
+                      <p className="text-sm text-slate-500 mt-1">{intv.triggerReason}</p>
+                      <div className="mt-2 flex items-center gap-3">
+                        <div className="flex-1 max-w-xs bg-slate-100 rounded-full h-2"><div className="bg-blue-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} /></div>
+                        <span className="text-xs text-slate-500">{completedActions}/{totalActions} actions</span>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                      <button
+                        onClick={() => onCreateIntervention(intv.studentId)}
+                        disabled={generating === intv.studentId}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                      >
+                        {generating === intv.studentId ? (
+                          <span className="flex items-center gap-1.5">
+                            <span className="animate-spin inline-block rounded-full h-3 w-3 border-b-2 border-indigo-600" />
+                            Analyzing...
+                          </span>
+                        ) : 'Re-analyze'}
+                      </button>
+                      <button onClick={() => onToggleExpand(intv.interventionId)} className="p-1 rounded hover:bg-slate-100 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={`w-5 h-5 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                        </svg>
+                      </button>
                     </div>
-                  ))}
+                  </div>
                 </div>
+                {isExpanded && (
+                  <div className="border-t border-slate-200">
+                    <div className="px-6 py-4 bg-blue-50/50">
+                      <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">AI Analysis</h4>
+                      <p className="text-sm text-slate-700 whitespace-pre-line">{intv.aiAnalysis}</p>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {intv.actions.map((action) => (
+                        <div key={action.actionId} className="px-6 py-4">
+                          <div className="flex items-start gap-3">
+                            <button disabled={updatingAction === action.actionId} onClick={() => onToggleAction(intv.interventionId, action.actionId, !action.isCompleted)}
+                              className={`mt-0.5 flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${action.isCompleted ? 'bg-green-500 border-green-500 text-white' : 'border-slate-300 hover:border-blue-400'} ${updatingAction === action.actionId ? 'opacity-50' : ''}`}>
+                              {action.isCompleted && <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>}
+                            </button>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-sm font-semibold ${action.isCompleted ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{action.title}</span>
+                                <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{action.actionType}</span>
+                              </div>
+                              <p className="text-sm text-slate-500 mt-0.5">{action.description}</p>
+                              <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
+                                <span>Target: {action.targetWeakness}</span>
+                                {action.dueDate && <span>Due: {action.dueDate}</span>}
+                              </div>
+                              {action.resources && action.resources.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {action.resources.map((r, i) => <a key={i} href={r} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">Resource {i + 1}</a>)}
+                                </div>
+                              )}
+                              {action.notes && <p className="text-xs text-green-600 mt-2">Notes: {action.notes}</p>}
+                              {!action.isCompleted && (
+                                <div className="mt-2">
+                                  <input type="text" placeholder="Add notes before completing..." value={noteInput[action.actionId] || ''} onChange={(e) => onNoteChange(action.actionId, e.target.value)}
+                                    className="w-full max-w-md text-xs border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:border-blue-400" />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -817,6 +1002,7 @@ function MetricsTab({ metrics, loading }: { metrics: MentorMetrics | null; loadi
 
 function StudentDetailPanel({
   detail, loading, mentorId, onClose, onNoteCreated, onNoteUpdated, onNoteDeleted,
+  onCreateIntervention, generating, generationError,
 }: {
   detail: StudentDetail | null;
   loading: boolean;
@@ -825,6 +1011,9 @@ function StudentDetailPanel({
   onNoteCreated: (note: MentorNote) => void;
   onNoteUpdated: (note: MentorNote) => void;
   onNoteDeleted: (noteId: string) => void;
+  onCreateIntervention: (studentId: string) => void;
+  generating: string | null;
+  generationError: string | null;
 }) {
   const [newNote, setNewNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -955,9 +1144,28 @@ function StudentDetailPanel({
             )}
 
             {/* Interventions Section */}
-            {detail.interventions.length > 0 && (
-              <section>
-                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Interventions ({detail.interventions.length})</h3>
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Interventions ({detail.interventions.length})</h3>
+                <button
+                  onClick={() => onCreateIntervention(detail.studentId)}
+                  disabled={generating === detail.studentId}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  {generating === detail.studentId ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="animate-spin inline-block rounded-full h-3 w-3 border-b-2 border-amber-600" />
+                      Analyzing...
+                    </span>
+                  ) : 'Run Analysis'}
+                </button>
+              </div>
+              {generationError && generating === null && (
+                <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700 mb-3">
+                  {generationError}
+                </div>
+              )}
+              {detail.interventions.length > 0 && (
                 <div className="space-y-3">
                   {detail.interventions.map((intv) => {
                     const done = intv.actions.filter((a) => a.isCompleted).length;
@@ -976,8 +1184,8 @@ function StudentDetailPanel({
                     );
                   })}
                 </div>
-              </section>
-            )}
+              )}
+            </section>
 
             {/* Notes Section */}
             <section>

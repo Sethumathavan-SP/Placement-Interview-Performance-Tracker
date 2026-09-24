@@ -1,4 +1,3 @@
-
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 const navItems = [
@@ -27,7 +26,7 @@ export const Layout = () => {
           </div>
           <span className="font-semibold text-lg text-slate-900 tracking-tight">Placement Portal</span>
         </div>
-        
+
         <nav className="flex-1 px-3 py-4 space-y-1">
           {navItems.map((item) => {
             const isActive = location.pathname.startsWith(item.path);
@@ -36,8 +35,8 @@ export const Layout = () => {
                 key={item.name}
                 to={item.path}
                 className={`flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive 
-                    ? 'bg-blue-50 text-blue-700' 
+                  isActive
+                    ? 'bg-blue-50 text-blue-700'
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >

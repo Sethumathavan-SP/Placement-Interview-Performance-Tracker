@@ -111,3 +111,7 @@ export const updateNote = async (
 export const deleteNote = async (mentorId: string, noteId: string): Promise<void> => {
   await apiDelete<unknown>(`/api/mentor/${mentorId}/notes/${noteId}`);
 };
+
+export const getCoordinators = async (): Promise<{ coordinatorId: string; name: string }[]> => {
+  return apiGet<{ coordinatorId: string; name: string }[]>('/api/coordinator/');
+};
