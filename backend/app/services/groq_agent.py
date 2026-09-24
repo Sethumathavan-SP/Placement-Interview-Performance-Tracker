@@ -1,7 +1,10 @@
 import json
 import re
 
-from groq import Groq
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None
 from sqlalchemy.orm import Session
 
 from app.config import settings

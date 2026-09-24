@@ -225,3 +225,72 @@ def get_at_risk_students(db: Session, min_failures: int = 2) -> list[dict]:
         at_risk.append({"student_id": student_id, "student_name": student.name, "department": student.department, "cgpa": student.cgpa, "total_failures": fail_count})
     at_risk.sort(key=lambda student: student["total_failures"], reverse=True)
     return at_risk
+
+
+def view_overall_pattern(db: Session) -> dict:
+    """viewOverAllPattern() — Failure breakdown across all departments and students."""
+    students = db.query(Student).all()
+    student_ids = [s.student_id for s in students]
+    distinct_departments = db.query(Student.department).distinct().all()
+
+    total_failures = (
+        db.query(RoundResult)
+        .filter(RoundResult.result == Result.FAILED)
+        .count()
+    )
+
+    results = (
+        db.query(RoundResult)
+        .filter(RoundResult.result == Result.FAILED)
+        .all()
+    )
+
+    by_type: dict[str, int] = {}
+    weaknesses: dict[str, dict[str, int]] = {}
+
+    for r in results:
+        round_obj = db.query(Round).filter(Round.round_id == r.round_id).first()
+        if round_obj:
+            rtype = round_obj.round_type.value
+            by_type[rtype] = by_type.get(rtype, 0) + 1
+            if rtype not in weaknesses:
+                weaknesses[rtype] = {}
+            if r.weakness_area:
+                weaknesses[rtype][r.weakness_area] = weaknesses[rtype].get(r.weakness_area, 0) + 1
+
+    failure_patterns = []
+    for rtype, count in sorted(by_type.items(), key=lambda x: -x[1]):
+        top_weaknesses = sorted(
+            weaknesses.get(rtype, {}).items(), key=lambda x: -x[1]
+        )[:5]
+        failure_patterns.append({
+            "round_type": rtype,
+            "total_failures": count,
+            "percentage_of_total": round(count / total_failures * 100, 1) if total_failures > 0 else 0.0,
+            "common_weaknesses": [w[0] for w in top_weaknesses],
+        })
+
+    most_failed = max(by_type, key=by_type.get) if by_type else None
+
+    at_risk = 0
+    for sid in student_ids:
+        failed_count = (
+            db.query(RoundResult)
+            .filter(RoundResult.student_id == sid, RoundResult.result == Result.FAILED)
+            .count()
+        )
+        if failed_count >= 3:
+            at_risk += 1
+
+    return {
+        "total_students": len(students),
+        "total_departments": len(distinct_departments),
+        "total_failures": total_failures,
+        "failure_by_round_type": failure_patterns,
+        "most_failed_round": most_failed,
+        "at_risk_count": at_risk,
+    }
+
+
+viewOverAllPattern = view_overall_pattern
+

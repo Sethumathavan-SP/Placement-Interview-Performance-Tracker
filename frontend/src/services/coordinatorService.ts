@@ -127,3 +127,20 @@ export const resetMockData = () => {
 };
 
 export const getMockState = () => studentsState;
+
+export const viewOverAllPattern = async () => {
+  await simulateNetworkDelay(300);
+  return {
+    totalStudents: studentsState.length,
+    totalDepartments: new Set(studentsState.map(s => s.department)).size,
+    totalFailures: 12,
+    failureByRoundType: [
+      { roundType: 'CODING', totalFailures: 6, percentageOfTotal: 50.0, commonWeaknesses: ['Data Structures', 'Algorithms', 'Dynamic Programming'] },
+      { roundType: 'APTITUDE', totalFailures: 4, percentageOfTotal: 33.3, commonWeaknesses: ['Quantitative', 'Logical Reasoning'] },
+      { roundType: 'TECHNICAL', totalFailures: 2, percentageOfTotal: 16.7, commonWeaknesses: ['DBMS', 'OOP'] },
+    ],
+    mostFailedRound: 'CODING',
+    atRiskCount: 2,
+  };
+};
+

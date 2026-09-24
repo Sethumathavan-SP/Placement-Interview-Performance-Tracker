@@ -78,3 +78,13 @@ class DepartmentAnalysisOut(BaseModel):
 class DepartmentWiseAnalysisResponse(BaseModel):
     total_departments: int
     departments: list[DepartmentAnalysisOut]
+
+
+class OverallFailurePatternResponse(BaseModel):
+    total_students: int
+    total_departments: int
+    total_failures: int
+    failure_by_round_type: list[FailurePatternOut]
+    most_failed_round: str | None = None
+    at_risk_count: int
+

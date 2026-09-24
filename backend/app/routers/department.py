@@ -19,8 +19,11 @@ from app.schemas.department import (
     DepartmentStudentOut,
     DepartmentWiseAnalysisResponse,
     FailurePatternOut,
+    OverallFailurePatternResponse,
     RoundSummaryOut,
 )
+from app.services.pattern_analyzer import view_overall_pattern
+
 
 router = APIRouter(prefix="/api/department", tags=["department"])
 
@@ -308,3 +311,14 @@ def department_wise_analysis(db: Session = Depends(get_db)):
         total_departments=len(departments),
         departments=dept_results,
     )
+
+
+@router.get("/overall-pattern", response_model=OverallFailurePatternResponse)
+def view_overall_pattern_route(db: Session = Depends(get_db)):
+    """viewOverAllPattern() — Failure breakdown across all departments and students."""
+    data = view_overall_pattern(db)
+    return OverallFailurePatternResponse(**data)
+
+
+viewOverAllPattern = view_overall_pattern_route
+

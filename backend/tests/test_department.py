@@ -180,3 +180,17 @@ def test_view_rounds_ece(client, db):
     aptitude = [r for r in data["rounds"] if r["round_type"] == "APTITUDE"][0]
     assert aptitude["total_passed"] == 1
     assert aptitude["total_failed"] == 0
+
+
+def test_view_overall_pattern(client, db):
+    _seed_department_data(db)
+    resp = client.get("/api/department/overall-pattern")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_students"] == 3
+    assert data["total_departments"] == 2
+    assert data["total_failures"] == 2
+    types = {f["round_type"]: f for f in data["failure_by_round_type"]}
+    assert "APTITUDE" in types
+    assert "CODING" in types
+
