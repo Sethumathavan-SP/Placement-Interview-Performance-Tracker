@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { MentorInterventions } from './pages/MentorInterventions';
 import { StudentAccessDirectory } from './pages/StudentAccessDirectory';
 import { StudentAccessDetail } from './pages/StudentAccessDetail';
 import { MentorDashboard } from './pages/MentorDashboard';
@@ -17,6 +18,8 @@ function App() {
 
           {/* Mentor Dashboard (single page with all mentor features) */}
           <Route path="/mentor/dashboard" element={<MentorDashboard />} />
+
+          <Route path="/interventions" element={<MentorInterventions />} />
 
           <Route path="*" element={<Navigate to="/mentor/dashboard" replace />} />
         </Route>
