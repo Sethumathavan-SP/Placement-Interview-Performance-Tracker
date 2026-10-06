@@ -53,7 +53,7 @@ function CreateDriveModal({ isOpen, onClose, onDriveCreated }) {
                 deadline: deadline || null
             };
 
-            const response = await fetch('/api/drives', {
+            const response = await authFetch('/api/drives', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)

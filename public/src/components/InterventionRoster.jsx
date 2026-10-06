@@ -15,9 +15,7 @@ function InterventionRoster({ user, canGenerate = true, title = 'Interventions',
         }
         setError('');
         try {
-            const response = await fetch('/api/interventions/students', {
-                headers: window.interventionHeaders(user)
-            });
+            const response = await authFetch('/api/interventions/students');
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.detail || 'Unable to load intervention students.');
@@ -42,9 +40,9 @@ function InterventionRoster({ user, canGenerate = true, title = 'Interventions',
         setGeneratingStudentId(student.uuid);
         setError('');
         try {
-            const response = await fetch('/api/interventions/generate', {
+            const response = await authFetch('/api/interventions/generate', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ student_id: student.uuid })
             });
             const data = await response.json();
@@ -64,9 +62,8 @@ function InterventionRoster({ user, canGenerate = true, title = 'Interventions',
         setGeneratingAll(true);
         setError('');
         try {
-            const response = await fetch('/api/interventions/generate-all', {
+            const response = await authFetch('/api/interventions/generate-all', {
                 method: 'POST',
-                headers: window.interventionHeaders(user)
             });
             const data = await response.json();
             if (!response.ok) {
@@ -87,9 +84,9 @@ function InterventionRoster({ user, canGenerate = true, title = 'Interventions',
     };
 
     const updateStatus = async (interventionId, nextStatus) => {
-        const response = await fetch(`/api/interventions/${interventionId}/status`, {
+        const response = await authFetch(`/api/interventions/${interventionId}/status`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: nextStatus })
         });
         if (response.ok) {
@@ -101,9 +98,9 @@ function InterventionRoster({ user, canGenerate = true, title = 'Interventions',
     };
 
     const updateAction = async (action) => {
-        const response = await fetch(`/api/intervention/actions/${action.id}`, {
+        const response = await authFetch(`/api/intervention/actions/${action.id}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ completed: !action.completed })
         });
         if (response.ok) {

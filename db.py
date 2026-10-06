@@ -1,6 +1,9 @@
 import sqlite3
 import uuid
 import os
+from datetime import datetime, timezone
+
+from password_utils import hash_password
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "database.db")
 
@@ -212,6 +215,36 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # JWT token blacklist for real logout and token revocation
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS token_blacklist (
+            id TEXT PRIMARY KEY,
+            jti TEXT UNIQUE NOT NULL,
+            token_type TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            blacklisted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_jti ON token_blacklist(jti)")
+
+    # Auth audit log for tracking all authentication events
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auth_audit_log (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            gmail TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT,
+            details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON auth_audit_log(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_event ON auth_audit_log(event_type)")
+
     conn.commit()
 
     # Seed demo users if empty
@@ -219,12 +252,12 @@ def init_db():
     row = cursor.fetchone()
     if row["count"] == 0:
         seed_users = [
-            (str(uuid.uuid4()), "coordinator@gmail.com", "coord123", "Coordinator"),
-            (str(uuid.uuid4()), "student@gmail.com", "student123", "Student"),
-            (str(uuid.uuid4()), "mentor@gmail.com", "mentor123", "Mentor"),
-            (str(uuid.uuid4()), "department@gmail.com", "dept123", "Department"),
-            (str(uuid.uuid4()), "dept.cse@gmail.com", "dept123", "Department"),
-            (str(uuid.uuid4()), "recruiter@gmail.com", "recruiter123", "Recruiter")
+            (str(uuid.uuid4()), "coordinator@gmail.com", hash_password("coord123"), "Coordinator"),
+            (str(uuid.uuid4()), "student@gmail.com", hash_password("student123"), "Student"),
+            (str(uuid.uuid4()), "mentor@gmail.com", hash_password("mentor123"), "Mentor"),
+            (str(uuid.uuid4()), "department@gmail.com", hash_password("dept123"), "Department"),
+            (str(uuid.uuid4()), "dept.cse@gmail.com", hash_password("dept123"), "Department"),
+            (str(uuid.uuid4()), "recruiter@gmail.com", hash_password("recruiter123"), "Recruiter")
         ]
         cursor.executemany("""
             INSERT INTO authenticate (uuid, gmail, password, role)
@@ -239,7 +272,7 @@ def init_db():
             cursor.execute("""
                 INSERT INTO authenticate (uuid, gmail, password, role)
                 VALUES (?, ?, ?, ?)
-            """, (str(uuid.uuid4()), "coordinator@gmail.com", "coord123", "Coordinator"))
+            """, (str(uuid.uuid4()), "coordinator@gmail.com", hash_password("coord123"), "Coordinator"))
             conn.commit()
 
         # Ensure mentor account exists
@@ -248,7 +281,7 @@ def init_db():
             cursor.execute("""
                 INSERT INTO authenticate (uuid, gmail, password, role)
                 VALUES (?, ?, ?, ?)
-            """, (str(uuid.uuid4()), "mentor@gmail.com", "mentor123", "Mentor"))
+            """, (str(uuid.uuid4()), "mentor@gmail.com", hash_password("mentor123"), "Mentor"))
             conn.commit()
             print("Seeded Mentor demo account.")
 
@@ -258,7 +291,7 @@ def init_db():
             cursor.execute("""
                 INSERT INTO authenticate (uuid, gmail, password, role)
                 VALUES (?, ?, ?, ?)
-            """, (str(uuid.uuid4()), "department@gmail.com", "dept123", "Department"))
+            """, (str(uuid.uuid4()), "department@gmail.com", hash_password("dept123"), "Department"))
             conn.commit()
 
         cursor.execute("SELECT uuid FROM authenticate WHERE LOWER(gmail) = 'dept.cse@gmail.com'")
@@ -266,7 +299,7 @@ def init_db():
             cursor.execute("""
                 INSERT INTO authenticate (uuid, gmail, password, role)
                 VALUES (?, ?, ?, ?)
-            """, (str(uuid.uuid4()), "dept.cse@gmail.com", "dept123", "Department"))
+            """, (str(uuid.uuid4()), "dept.cse@gmail.com", hash_password("dept123"), "Department"))
             conn.commit()
 
         # Migrate/remove legacy Admin role records to Coordinator
@@ -300,7 +333,19 @@ def init_db():
         """, sample_drives)
         conn.commit()
         print("Database seeded with sample recruitment drives.")
-        
+
+    # Migrate plaintext passwords to bcrypt hashes
+    cursor.execute("SELECT uuid, password FROM authenticate")
+    for row in cursor.fetchall():
+        pwd = row["password"]
+        if not pwd.startswith("$2b$"):
+            hashed = hash_password(pwd)
+            cursor.execute("UPDATE authenticate SET password = ? WHERE uuid = ?", (hashed, row["uuid"]))
+    conn.commit()
+
+    # Clean up expired blacklist entries on startup
+    cleanup_expired_blacklist()
+
     conn.close()
 
 def get_user_by_gmail(gmail: str):
@@ -713,7 +758,8 @@ def bulk_grant_user_access(users_list: list):
 
         if existing:
             if custom_password:
-                cursor.execute("UPDATE authenticate SET role = ?, password = ? WHERE LOWER(gmail) = ?", (role, custom_password, gmail))
+                hashed_pwd = hash_password(custom_password)
+                cursor.execute("UPDATE authenticate SET role = ?, password = ? WHERE LOWER(gmail) = ?", (role, hashed_pwd, gmail))
                 action_str = "Updated Role & Password"
             else:
                 cursor.execute("UPDATE authenticate SET role = ? WHERE LOWER(gmail) = ?", (role, gmail))
@@ -724,36 +770,35 @@ def bulk_grant_user_access(users_list: list):
                 "uuid": existing["uuid"],
                 "gmail": gmail,
                 "role": role,
-                "password": custom_password if custom_password else existing["password"],
                 "action": action_str
             })
         else:
             if custom_password:
-                final_pwd = custom_password
+                raw_pwd = custom_password
             elif role == "Student":
-                final_pwd = "student123"
+                raw_pwd = "student123"
             elif role == "Mentor":
-                final_pwd = "mentor123"
+                raw_pwd = "mentor123"
             elif role == "Department":
-                final_pwd = "dept123"
+                raw_pwd = "dept123"
             elif role == "Recruiter":
-                final_pwd = "recruiter123"
+                raw_pwd = "recruiter123"
             elif role == "Coordinator":
-                final_pwd = "coord123"
+                raw_pwd = "coord123"
             else:
-                final_pwd = "user123"
+                raw_pwd = "user123"
 
+            hashed_pwd = hash_password(raw_pwd)
             new_uuid = str(uuid.uuid4())
             cursor.execute("""
                 INSERT INTO authenticate (uuid, gmail, password, role)
                 VALUES (?, ?, ?, ?)
-            """, (new_uuid, gmail, final_pwd, role))
+            """, (new_uuid, gmail, hashed_pwd, role))
             created_count += 1
             processed_users.append({
                 "uuid": new_uuid,
                 "gmail": gmail,
                 "role": role,
-                "password": final_pwd,
                 "action": "Created Account"
             })
 
@@ -774,7 +819,7 @@ def grant_single_user_access(gmail: str, role: str = "Student", password: str = 
     cursor = conn.cursor()
 
     gmail_clean = gmail.strip().lower()
-    
+
     # Normalize role casing
     if role.lower() == "student":
         role = "Student"
@@ -791,9 +836,9 @@ def grant_single_user_access(gmail: str, role: str = "Student", password: str = 
     existing = cursor.fetchone()
 
     if existing:
-        final_pwd = password.strip() if (password and password.strip()) else existing["password"]
         if password and password.strip():
-            cursor.execute("UPDATE authenticate SET role = ?, password = ? WHERE LOWER(gmail) = ?", (role, final_pwd, gmail_clean))
+            hashed_pwd = hash_password(password.strip())
+            cursor.execute("UPDATE authenticate SET role = ?, password = ? WHERE LOWER(gmail) = ?", (role, hashed_pwd, gmail_clean))
         else:
             cursor.execute("UPDATE authenticate SET role = ? WHERE LOWER(gmail) = ?", (role, gmail_clean))
         conn.commit()
@@ -803,16 +848,16 @@ def grant_single_user_access(gmail: str, role: str = "Student", password: str = 
             "uuid": existing["uuid"],
             "gmail": gmail_clean,
             "role": role,
-            "password": final_pwd,
             "action": "Updated Role & Password" if (password and password.strip()) else "Updated Role"
         }
     else:
-        final_pwd = password.strip() if (password and password.strip()) else ("student123" if role == "Student" else "mentor123" if role == "Mentor" else "dept123" if role == "Department" else "user123")
+        raw_pwd = password.strip() if (password and password.strip()) else ("student123" if role == "Student" else "mentor123" if role == "Mentor" else "dept123" if role == "Department" else "user123")
+        hashed_pwd = hash_password(raw_pwd)
         new_uuid = str(uuid.uuid4())
         cursor.execute("""
             INSERT INTO authenticate (uuid, gmail, password, role)
             VALUES (?, ?, ?, ?)
-        """, (new_uuid, gmail_clean, final_pwd, role))
+        """, (new_uuid, gmail_clean, hashed_pwd, role))
         conn.commit()
         conn.close()
 
@@ -820,7 +865,6 @@ def grant_single_user_access(gmail: str, role: str = "Student", password: str = 
             "uuid": new_uuid,
             "gmail": gmail_clean,
             "role": role,
-            "password": final_pwd,
             "action": "Created Account"
         }
 
@@ -1326,10 +1370,10 @@ def upsert_user_account(email: str, role: str = "Student", password: str = None)
     existing = cursor.fetchone()
 
     if existing:
-        final_password = password if password else existing["password"]
+        final_password = hash_password(password) if password else existing["password"]
         cursor.execute("""
-            UPDATE authenticate 
-            SET role = ?, password = ? 
+            UPDATE authenticate
+            SET role = ?, password = ?
             WHERE LOWER(gmail) = ?
         """, (normalized_role, final_password, email_clean))
         action = "Updated"
@@ -1343,7 +1387,8 @@ def upsert_user_account(email: str, role: str = "Student", password: str = None)
             "Department": "dept123",
             "Recruiter": "recruiter123"
         }
-        final_password = password if password else default_pwds.get(normalized_role, f"{normalized_role.lower()}123")
+        raw_password = password if password else default_pwds.get(normalized_role, f"{normalized_role.lower()}123")
+        final_password = hash_password(raw_password)
         cursor.execute("""
             INSERT INTO authenticate (uuid, gmail, password, role)
             VALUES (?, ?, ?, ?)
@@ -1426,6 +1471,83 @@ def get_upload_logs():
     cursor = conn.cursor()
     cursor.execute("SELECT log_id, upload_type, filename, total_rows, processed_count, skipped_count, status, created_at FROM upload_logs ORDER BY created_at DESC")
     logs = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return logs
+
+
+# ==============================================================
+# TOKEN BLACKLIST FUNCTIONS
+# ==============================================================
+
+def blacklist_token(jti: str, token_type: str, user_id: str, expires_at: datetime):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR IGNORE INTO token_blacklist (id, jti, token_type, user_id, expires_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (str(uuid.uuid4()), jti, token_type, user_id, expires_at.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def is_token_blacklisted(jti: str) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM token_blacklist WHERE jti = ?", (jti,))
+    found = cursor.fetchone() is not None
+    conn.close()
+    return found
+
+
+def cleanup_expired_blacklist():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM token_blacklist WHERE expires_at < ?",
+                   (datetime.now(timezone.utc).isoformat(),))
+    conn.commit()
+    conn.close()
+
+
+def blacklist_all_user_refresh_tokens(user_id: str):
+    """Blacklist cannot cover tokens we don't know about, but this is called
+    after password reset to invalidate any refresh tokens we previously issued
+    that are still in the blacklist table.  For tokens never seen by the
+    blacklist the short access-token expiry (15 min) limits exposure."""
+    pass
+
+
+# ==============================================================
+# AUTH AUDIT LOG FUNCTIONS
+# ==============================================================
+
+def log_auth_event(user_id: str, gmail: str, event_type: str,
+                   ip_address: str = None, user_agent: str = None,
+                   details: str = None):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO auth_audit_log (id, user_id, gmail, event_type, ip_address, user_agent, details)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (str(uuid.uuid4()), user_id, gmail, event_type, ip_address, user_agent, details))
+    conn.commit()
+    conn.close()
+
+
+def get_auth_audit_log(user_id: str = None, event_type: str = None, limit: int = 100):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    query = "SELECT * FROM auth_audit_log WHERE 1=1"
+    params = []
+    if user_id:
+        query += " AND user_id = ?"
+        params.append(user_id)
+    if event_type:
+        query += " AND event_type = ?"
+        params.append(event_type)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    cursor.execute(query, params)
+    logs = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return logs
 

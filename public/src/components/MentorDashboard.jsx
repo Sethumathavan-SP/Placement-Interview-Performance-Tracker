@@ -35,15 +35,13 @@ function MentorDashboard({ user, onLogout }) {
         setLoading(true);
         try {
             // Fetch sample or demo mentees
-            const menteesRes = await fetch(`/api/mentor/demo/mentees`);
+            const menteesRes = await authFetch(`/api/mentor/demo/mentees`);
             if (menteesRes.ok) {
                 const data = await menteesRes.json();
                 setMentees(data.mentees || []);
                 setPlacedMentees(data.placed_mentees || []);
                 setMetrics(data.metrics || null);
-                const interventionRes = await fetch('/api/interventions', {
-                    headers: window.interventionHeaders(user)
-                });
+                const interventionRes = await authFetch('/api/interventions');
                 if (interventionRes.ok) {
                     const interventionData = await interventionRes.json();
                     setInterventions(interventionData.interventions || []);
@@ -97,7 +95,7 @@ function MentorDashboard({ user, onLogout }) {
         setSelectedStudent(student);
         setNotesLoading(true);
         try {
-            const res = await fetch(`/api/mentor/notes?student_id=${student.student_id}`);
+            const res = await authFetch(`/api/mentor/notes?student_id=${student.student_id}`);
             if (res.ok) {
                 const data = await res.json();
                 setStudentNotes(data.notes || []);
@@ -118,7 +116,7 @@ function MentorDashboard({ user, onLogout }) {
         e.preventDefault();
         if (!newNoteContent.trim() || !selectedStudent) return;
         try {
-            const res = await fetch('/api/mentor/notes', {
+            const res = await authFetch('/api/mentor/notes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -157,7 +155,7 @@ function MentorDashboard({ user, onLogout }) {
     const handleSaveEditNote = async (noteId) => {
         if (!editNoteContent.trim()) return;
         try {
-            await fetch(`/api/mentor/notes/${noteId}`, {
+            await authFetch(`/api/mentor/notes/${noteId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ content: editNoteContent.trim() })
@@ -171,7 +169,7 @@ function MentorDashboard({ user, onLogout }) {
 
     const handleDeleteNote = async (noteId) => {
         try {
-            await fetch(`/api/mentor/notes/${noteId}`, { method: 'DELETE' });
+            await authFetch(`/api/mentor/notes/${noteId}`, { method: 'DELETE' });
         } catch (e) { }
         setStudentNotes(prev => prev.filter(n => n.note_id !== noteId));
         showToast('Note deleted.');
@@ -182,9 +180,9 @@ function MentorDashboard({ user, onLogout }) {
         const intervention = interventions.find(item => item.id === intvId);
         const action = intervention?.actions?.find(item => item.id === actionId);
         if (!action) return;
-        const res = await fetch(`/api/intervention/actions/${actionId}`, {
+        const res = await authFetch(`/api/intervention/actions/${actionId}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ completed: !action.completed })
         });
         if (!res.ok) {
@@ -204,9 +202,9 @@ function MentorDashboard({ user, onLogout }) {
     const handleGenerateIntervention = async (student) => {
         setGeneratingStudentId(student.student_id);
         try {
-            const res = await fetch('/api/interventions/generate', {
+            const res = await authFetch('/api/interventions/generate', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ student_id: student.student_id })
             });
             const data = await res.json();
@@ -227,7 +225,7 @@ function MentorDashboard({ user, onLogout }) {
     const handleViewRounds = async (student) => {
         setViewRoundsStudent(student);
         try {
-            const res = await fetch(`/api/student/results?gmail=${encodeURIComponent(student.email)}`);
+            const res = await authFetch(`/api/student/results?gmail=${encodeURIComponent(student.email)}`);
             if (res.ok) {
                 const data = await res.json();
                 setRoundsHistory(data.results || []);

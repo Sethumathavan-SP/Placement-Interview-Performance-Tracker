@@ -30,6 +30,7 @@ function LoginForm({ onLoginSuccess }) {
         try {
             const response = await fetch('/api/login', {
                 method: 'POST',
+                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ gmail: gmail.trim(), password })
             });
@@ -37,9 +38,10 @@ function LoginForm({ onLoginSuccess }) {
             const data = await response.json();
 
             if (response.ok && data.success) {
-                // Save role and uuid in browser localStorage as requested
-                localStorage.setItem('auth_user', JSON.stringify(data.user));
-                
+                if (data.csrf_token) {
+                    localStorage.setItem('csrf_token', data.csrf_token);
+                }
+
                 setAlert({ show: true, type: 'success', message: data.message || 'Logged in successfully!' });
                 setTimeout(() => {
                     onLoginSuccess(data.user);

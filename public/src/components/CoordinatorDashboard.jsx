@@ -35,7 +35,7 @@ function CoordinatorDashboard({ user, onLogout }) {
     const fetchDrives = React.useCallback(async () => {
         setLoadingDrives(true);
         try {
-            const res = await fetch('/api/drives');
+            const res = await authFetch('/api/drives');
             const data = await res.json();
             if (res.ok && data.success) {
                 setDrives(data.drives || []);
@@ -54,9 +54,7 @@ function CoordinatorDashboard({ user, onLogout }) {
     const fetchInterventions = React.useCallback(async () => {
         setLoadingInterventions(true);
         try {
-            const res = await fetch('/api/interventions', {
-                headers: window.interventionHeaders(user)
-            });
+            const res = await authFetch('/api/interventions');
             if (res.ok) {
                 const data = await res.json();
                 setInterventions(data.interventions || []);
@@ -73,9 +71,9 @@ function CoordinatorDashboard({ user, onLogout }) {
     }, [fetchInterventions]);
 
     const updateInterventionStatus = async (interventionId, nextStatus) => {
-        const res = await fetch(`/api/interventions/${interventionId}/status`, {
+        const res = await authFetch(`/api/interventions/${interventionId}/status`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: nextStatus })
         });
         if (res.ok) {
@@ -86,9 +84,9 @@ function CoordinatorDashboard({ user, onLogout }) {
     };
 
     const regenerateIntervention = async (studentGmail) => {
-        const res = await fetch('/api/interventions/generate', {
+        const res = await authFetch('/api/interventions/generate', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ gmail: studentGmail })
         });
         const data = await res.json();

@@ -44,7 +44,7 @@ function UploadResultsModal({ isOpen, onClose, drives, initialDriveId, onResults
             const formData = new FormData();
             formData.append('file', file);
 
-            const res = await fetch(`/api/drives/${selectedDriveId}/upload-results`, {
+            const res = await authFetch(`/api/drives/${selectedDriveId}/upload-results`, {
                 method: 'POST',
                 body: formData
             });

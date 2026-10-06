@@ -29,28 +29,28 @@ function StudentDashboard({ user, onLogout }) {
             const gmail = user?.gmail || 'student@gmail.com';
 
             // 1. Fetch drives
-            const resDrives = await fetch('/api/drives');
+            const resDrives = await authFetch('/api/drives');
             if (resDrives.ok) {
                 const dData = await resDrives.json();
                 setAllDrives(dData.drives || []);
             }
 
             // 2. Fetch student results
-            const resResults = await fetch(`/api/student/results?gmail=${encodeURIComponent(gmail)}`);
+            const resResults = await authFetch(`/api/student/results?gmail=${encodeURIComponent(gmail)}`);
             if (resResults.ok) {
                 const rData = await resResults.json();
                 setMyResults(rData.results || []);
             }
 
             // 3. Fetch applications or generate from results
-            const resApps = await fetch(`/api/student/applications?gmail=${encodeURIComponent(gmail)}`);
+            const resApps = await authFetch(`/api/student/applications?gmail=${encodeURIComponent(gmail)}`);
             if (resApps.ok) {
                 const aData = await resApps.json();
                 setMyApplications(aData.applications || []);
             }
 
             // 4. Fetch analysis data
-            const resAnalysis = await fetch(`/api/student/analysis?gmail=${encodeURIComponent(gmail)}`);
+            const resAnalysis = await authFetch(`/api/student/analysis?gmail=${encodeURIComponent(gmail)}`);
             if (resAnalysis.ok) {
                 const anData = await resAnalysis.json();
                 setAnalysisData(anData);
@@ -70,9 +70,7 @@ function StudentDashboard({ user, onLogout }) {
                 });
             }
 
-            const resInterventions = await fetch(`/api/interventions/${encodeURIComponent(user?.uuid || '')}`, {
-                headers: window.interventionHeaders ? window.interventionHeaders(user) : {}
-            });
+            const resInterventions = await authFetch(`/api/interventions/${encodeURIComponent(user?.uuid || '')}`);
             if (resInterventions.ok) {
                 const interventionData = await resInterventions.json();
                 setInterventions(interventionData.interventions || []);
@@ -81,7 +79,7 @@ function StudentDashboard({ user, onLogout }) {
             }
 
             // 5. Fetch student profile from database (updated by coordinator roster)
-            const resProfile = await fetch(`/api/student/profile?gmail=${encodeURIComponent(gmail)}`);
+            const resProfile = await authFetch(`/api/student/profile?gmail=${encodeURIComponent(gmail)}`);
             if (resProfile.ok) {
                 const pData = await resProfile.json();
                 if (pData.profile) {
@@ -144,7 +142,7 @@ function StudentDashboard({ user, onLogout }) {
         }
 
         try {
-            const res = await fetch('/api/student/apply', {
+            const res = await authFetch('/api/student/apply', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -189,7 +187,7 @@ function StudentDashboard({ user, onLogout }) {
             formData.append('file', resumeFile);
             formData.append('gmail', user.gmail);
 
-            const res = await fetch('/api/student/resume-upload', {
+            const res = await authFetch('/api/student/resume-upload', {
                 method: 'POST',
                 body: formData
             });

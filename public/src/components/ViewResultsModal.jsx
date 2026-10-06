@@ -8,7 +8,7 @@ function ViewResultsModal({ isOpen, onClose, drive }) {
     const fetchResults = React.useCallback(async () => {
         setLoading(true);
         try {
-            const res = await fetch(`/api/drives/${drive.id}/results`);
+            const res = await authFetch(`/api/drives/${drive.id}/results`);
             const data = await res.json();
             if (res.ok && data.success) {
                 setResults(data.results || []);

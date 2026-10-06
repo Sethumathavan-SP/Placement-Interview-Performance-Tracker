@@ -26,14 +26,12 @@ function DepartmentDashboard({ user, onLogout }) {
     const fetchDepartmentData = React.useCallback(async () => {
         setLoading(true);
         try {
-            const res = await fetch('/api/department/dashboard?dept=CSE');
+            const res = await authFetch('/api/department/dashboard?dept=CSE');
             if (res.ok) {
                 const data = await res.json();
                 setDeptData(data);
             }
-            const interventionRes = await fetch('/api/interventions', {
-                headers: window.interventionHeaders(user)
-            });
+            const interventionRes = await authFetch('/api/interventions');
             if (interventionRes.ok) {
                 const interventionData = await interventionRes.json();
                 setInterventions(interventionData.interventions || []);
@@ -66,9 +64,9 @@ function DepartmentDashboard({ user, onLogout }) {
     const placedStudents = deptData?.placed_students || [];
 
     const updateInterventionStatus = async (interventionId, nextStatus) => {
-        const res = await fetch(`/api/interventions/${interventionId}/status`, {
+        const res = await authFetch(`/api/interventions/${interventionId}/status`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...window.interventionHeaders(user) },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: nextStatus })
         });
         if (res.ok) {

@@ -41,7 +41,7 @@ function UploadUserAccessModal({ isOpen, onClose, onAccessGranted }) {
         setLoading(true);
 
         try {
-            const res = await fetch('/api/users/grant-single-access', {
+            const res = await authFetch('/api/users/grant-single-access', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -86,7 +86,7 @@ function UploadUserAccessModal({ isOpen, onClose, onAccessGranted }) {
             formData.append('file', file);
             formData.append('default_role', selectedRole);
 
-            const res = await fetch('/api/users/upload-access', {
+            const res = await authFetch('/api/users/upload-access', {
                 method: 'POST',
                 body: formData
             });

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, status, Form, UploadFile, File, Header
+from fastapi import FastAPI, HTTPException, status, Form, UploadFile, File, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,29 +8,56 @@ import uvicorn
 import io
 import csv
 import openpyxl
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 import db
 import intervention_service
 import bulk_upload_module.parser as bulk_parser
 import bulk_upload_module.exporter as bulk_exporter
 from bulk_upload_module.config import TEMPLATES_DIR, MAX_FILE_SIZE_BYTES
+from password_utils import verify_password
+from auth import (
+    create_access_token,
+    create_refresh_token,
+    create_password_reset_token,
+    create_csrf_token,
+    decode_token,
+    get_current_user,
+    require_role,
+    CSRFMiddleware,
+    SECURE_COOKIES,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+)
 
 
 # Initialize database on startup
 db.init_db()
+
+limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
     title="Placement Portal & Dedicated Bulk Upload Engine",
     description="Integrated API for Authentication, Placement Drives, Student Profiles, and Bulk Ingestion/Export."
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CSRF middleware must be added before CORS so it runs on the inner layer
+app.add_middleware(CSRFMiddleware)
+
 # Enable CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins during dev
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,43 +67,256 @@ class LoginRequest(BaseModel):
     gmail: str = Field(..., json_schema_extra={"example": "student@gmail.com"})
     password: str = Field(..., json_schema_extra={"example": "student123"})
 
+
+def _set_auth_cookies(response: JSONResponse, access_token: str, refresh_token: str, csrf_token: str):
+    response.set_cookie(
+        key="access_token", value=access_token,
+        httponly=True, secure=SECURE_COOKIES, samesite="strict",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, path="/api",
+    )
+    response.set_cookie(
+        key="refresh_token", value=refresh_token,
+        httponly=True, secure=SECURE_COOKIES, samesite="strict",
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400, path="/api/refresh",
+    )
+    response.set_cookie(
+        key="csrf_token", value=csrf_token,
+        httponly=False, secure=SECURE_COOKIES, samesite="strict",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, path="/",
+    )
+
+
+def _clear_auth_cookies(response: JSONResponse):
+    response.delete_cookie(key="access_token", path="/api")
+    response.delete_cookie(key="refresh_token", path="/api/refresh")
+    response.delete_cookie(key="csrf_token", path="/")
+
+
 @app.post("/api/login")
-async def login(credentials: LoginRequest):
+@limiter.limit("5/minute")
+async def login(request: Request, credentials: LoginRequest):
     gmail = credentials.gmail.strip()
     password = credentials.password
-    
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("User-Agent")
+
     if not gmail or not password:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"success": False, "message": "Gmail and password are required"}
+            content={"success": False, "message": "Gmail and password are required"},
         )
-    
-    # Query database table 'authenticate' for user record
+
     user = db.get_user_by_gmail(gmail)
-    
-    # Check if user exists and compare stored password
-    if not user or user["password"] != password:
+
+    if not user or not verify_password(password, user["password"]):
+        db.log_auth_event(
+            user_id=user["uuid"] if user else None,
+            gmail=gmail,
+            event_type="LOGIN_FAILED",
+            ip_address=ip, user_agent=ua,
+            details="Invalid credentials",
+        )
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            content={
-                "success": False,
-                "message": "Invalid Gmail or password"
-            }
+            content={"success": False, "message": "Invalid Gmail or password"},
         )
-    
-    return JSONResponse(
+
+    user_data = {
+        "uuid": user["uuid"],
+        "gmail": user["gmail"],
+        "role": user["role"],
+        "department": user.get("department") or "CSE",
+    }
+
+    access_token = create_access_token(user_data)
+    refresh_token = create_refresh_token(user_data)
+    csrf_token = create_csrf_token()
+
+    db.log_auth_event(
+        user_id=user["uuid"], gmail=user["gmail"],
+        event_type="LOGIN_SUCCESS", ip_address=ip, user_agent=ua,
+    )
+
+    response = JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
             "success": True,
             "message": "Logged in successfully",
-            "user": {
-                "uuid": user["uuid"],
-                "gmail": user["gmail"],
-                "role": user["role"],
-                "department": user.get("department") or "CSE"
-            }
-        }
+            "user": user_data,
+            "csrf_token": csrf_token,
+        },
     )
+    _set_auth_cookies(response, access_token, refresh_token, csrf_token)
+    return response
+
+
+@app.post("/api/refresh")
+@limiter.limit("10/minute")
+async def refresh(request: Request):
+    token = request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token")
+
+    payload = decode_token(token)
+    if payload["type"] != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    if db.is_token_blacklisted(payload["jti"]):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+
+    # Blacklist the old refresh token (rotation)
+    db.blacklist_token(
+        jti=payload["jti"], token_type="refresh",
+        user_id=payload["sub"],
+        expires_at=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+    )
+
+    # Fetch fresh user data from DB (picks up role/department changes)
+    user = db.get_user_by_id(payload["sub"])
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    user_data = {
+        "uuid": user["uuid"],
+        "gmail": user["gmail"],
+        "role": user["role"],
+        "department": user.get("department") or "CSE",
+    }
+
+    new_access = create_access_token(user_data)
+    new_refresh = create_refresh_token(user_data)
+    new_csrf = create_csrf_token()
+
+    ip = request.client.host if request.client else None
+    db.log_auth_event(
+        user_id=user["uuid"], gmail=user["gmail"],
+        event_type="TOKEN_REFRESH",
+        ip_address=ip, user_agent=request.headers.get("User-Agent"),
+    )
+
+    response = JSONResponse(content={
+        "success": True,
+        "user": user_data,
+        "csrf_token": new_csrf,
+    })
+    _set_auth_cookies(response, new_access, new_refresh, new_csrf)
+    return response
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    access_tok = request.cookies.get("access_token")
+    refresh_tok = request.cookies.get("refresh_token")
+
+    user_id = None
+    gmail = "unknown"
+
+    if access_tok:
+        try:
+            ap = decode_token(access_tok)
+            user_id = ap["sub"]
+            gmail = ap.get("gmail", "unknown")
+            db.blacklist_token(
+                jti=ap["jti"], token_type="access", user_id=ap["sub"],
+                expires_at=datetime.fromtimestamp(ap["exp"], tz=timezone.utc),
+            )
+        except HTTPException:
+            pass
+
+    if refresh_tok:
+        try:
+            rp = decode_token(refresh_tok)
+            if not user_id:
+                user_id = rp["sub"]
+                gmail = rp.get("gmail", "unknown")
+            db.blacklist_token(
+                jti=rp["jti"], token_type="refresh", user_id=rp["sub"],
+                expires_at=datetime.fromtimestamp(rp["exp"], tz=timezone.utc),
+            )
+        except HTTPException:
+            pass
+
+    ip = request.client.host if request.client else None
+    db.log_auth_event(
+        user_id=user_id, gmail=gmail, event_type="LOGOUT",
+        ip_address=ip, user_agent=request.headers.get("User-Agent"),
+    )
+
+    response = JSONResponse(content={"success": True, "message": "Logged out"})
+    _clear_auth_cookies(response)
+    return response
+
+
+@app.get("/api/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    return {"success": True, "user": user}
+
+
+class PasswordResetRequest(BaseModel):
+    gmail: str
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
+
+@app.post("/api/password-reset/request")
+@limiter.limit("3/minute")
+async def request_password_reset(request: Request, body: PasswordResetRequest):
+    gmail = body.gmail.strip().lower()
+    user = db.get_user_by_gmail(gmail)
+
+    if user:
+        reset_token = create_password_reset_token(user)
+        db.log_auth_event(
+            user_id=user["uuid"], gmail=gmail,
+            event_type="PASSWORD_RESET_REQUEST",
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("User-Agent"),
+            details=f"Reset token: {reset_token}",
+        )
+
+    return JSONResponse(content={
+        "success": True,
+        "message": "If the account exists, a reset link has been generated.",
+    })
+
+@app.post("/api/password-reset/confirm")
+@limiter.limit("5/minute")
+async def confirm_password_reset(request: Request, body: PasswordResetConfirm):
+    payload = decode_token(body.token)
+    if payload["type"] != "password_reset":
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+    if db.is_token_blacklisted(payload["jti"]):
+        raise HTTPException(status_code=400, detail="Reset token already used")
+
+    from password_utils import hash_password
+    user = db.get_user_by_id(payload["sub"])
+    if not user:
+        raise HTTPException(status_code=400, detail="User not found")
+
+    conn = db.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE authenticate SET password = ? WHERE uuid = ?",
+        (hash_password(body.new_password), user["uuid"]),
+    )
+    conn.commit()
+    conn.close()
+
+    # Blacklist the reset token (single-use)
+    db.blacklist_token(
+        jti=payload["jti"], token_type="password_reset",
+        user_id=payload["sub"],
+        expires_at=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+    )
+
+    db.log_auth_event(
+        user_id=user["uuid"], gmail=user["gmail"],
+        event_type="PASSWORD_RESET_COMPLETE",
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("User-Agent"),
+    )
+
+    return JSONResponse(content={"success": True, "message": "Password updated successfully."})
 
 class CreateDriveRequest(BaseModel):
     company_name: str
@@ -89,21 +329,19 @@ class CreateDriveRequest(BaseModel):
     deadline: str = None
 
 @app.get("/api/users")
-async def list_demo_users():
-    """Helper endpoint to list available demo accounts for convenience."""
+async def list_demo_users(user: dict = Depends(require_role("Coordinator"))):
     users = db.get_all_users()
     return {"success": True, "users": users, "count": len(users)}
 
 @app.get("/api/drives")
-async def list_drives():
-    """Endpoint to retrieve all placement drives from SQLite."""
+async def list_drives(user: dict = Depends(get_current_user)):
     drives = db.get_all_drives()
     for d in drives:
         d["results_count"] = db.get_drive_results_count(d["id"])
     return {"success": True, "drives": drives}
 
 @app.post("/api/drives")
-async def create_new_drive(drive_data: CreateDriveRequest):
+async def create_new_drive(drive_data: CreateDriveRequest, user: dict = Depends(require_role("Coordinator"))):
     """Endpoint for Coordinator to create a new placement drive."""
     if not drive_data.company_name.strip() or not drive_data.job_role.strip():
         return JSONResponse(
@@ -128,7 +366,7 @@ async def create_new_drive(drive_data: CreateDriveRequest):
     )
 
 @app.get("/api/drives/{drive_id}/results")
-async def get_drive_results(drive_id: str):
+async def get_drive_results(drive_id: str, user: dict = Depends(get_current_user)):
     """Retrieve all student evaluation results for a specific drive."""
     results = db.get_drive_results(drive_id)
     return {"success": True, "results": results, "count": len(results)}
@@ -139,7 +377,7 @@ async def get_drive_results(drive_id: str):
 # ==============================================================
 
 @app.get("/api/templates")
-def list_sample_templates():
+def list_sample_templates(user: dict = Depends(get_current_user)):
     """Lists all available sample templates with download links and column schemas."""
     templates = [
         {
@@ -192,7 +430,7 @@ def list_sample_templates():
 
 
 @app.get("/api/templates/download/{filename}")
-def download_template(filename: str):
+def download_template(filename: str, user: dict = Depends(get_current_user)):
     """Downloads a specific Excel (.xlsx) or CSV sample template file."""
     filepath = os.path.join(TEMPLATES_DIR, filename)
     if not os.path.exists(filepath):
@@ -210,7 +448,7 @@ def download_template(filename: str):
 # ==============================================================
 
 @app.post("/api/upload/drive-shortlist/{drive_id}")
-async def upload_drive_shortlist(drive_id: str, file: UploadFile = File(...)):
+async def upload_drive_shortlist(drive_id: str, file: UploadFile = File(...), user: dict = Depends(require_role("Coordinator"))):
     drive = db.get_drive(drive_id)
     if not drive:
         raise HTTPException(status_code=404, detail=f"Drive with ID '{drive_id}' was not found.")
@@ -252,7 +490,7 @@ async def upload_drive_shortlist(drive_id: str, file: UploadFile = File(...)):
 
 
 @app.post("/api/upload/drive-results/{drive_id}")
-async def upload_drive_results_endpoint(drive_id: str, file: UploadFile = File(...)):
+async def upload_drive_results_endpoint(drive_id: str, file: UploadFile = File(...), user: dict = Depends(require_role("Coordinator"))):
     drive = db.get_drive(drive_id)
     if not drive:
         raise HTTPException(status_code=404, detail=f"Drive with ID '{drive_id}' was not found.")
@@ -301,7 +539,7 @@ async def upload_drive_results_endpoint(drive_id: str, file: UploadFile = File(.
 
 
 @app.post("/api/drives/{drive_id}/upload-results")
-async def upload_drive_results(drive_id: str, file: UploadFile = File(...)):
+async def upload_drive_results(drive_id: str, file: UploadFile = File(...), user: dict = Depends(require_role("Coordinator"))):
     """
     Upload Excel (.xlsx) or CSV file containing candidate results.
     Auto-detects Shortlist Mode vs Verdict Mode and updates student statuses for this company drive.
@@ -364,7 +602,8 @@ async def upload_drive_results(drive_id: str, file: UploadFile = File(...)):
 @app.post("/api/users/upload-access")
 async def upload_user_access(
     file: UploadFile = File(...),
-    default_role: str = Form("Student")
+    default_role: str = Form("Student"),
+    user: dict = Depends(require_role("Coordinator")),
 ):
     content = await file.read()
     if len(content) > MAX_FILE_SIZE_BYTES:
@@ -415,7 +654,7 @@ async def upload_user_access(
 
 
 @app.post("/api/upload/student-roster")
-async def upload_student_roster(file: UploadFile = File(...)):
+async def upload_student_roster(file: UploadFile = File(...), user: dict = Depends(require_role("Coordinator"))):
     content = await file.read()
     if len(content) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(status_code=400, detail="File size exceeds maximum allowed 10MB limit.")
@@ -460,7 +699,7 @@ async def upload_student_roster(file: UploadFile = File(...)):
 
 
 @app.post("/api/upload/company-drives")
-async def upload_company_drives(file: UploadFile = File(...)):
+async def upload_company_drives(file: UploadFile = File(...), user: dict = Depends(require_role("Coordinator"))):
     content = await file.read()
     if len(content) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(status_code=400, detail="File size exceeds maximum allowed 10MB limit.")
@@ -520,7 +759,7 @@ class GrantSingleAccessRequest(BaseModel):
     password: str = None
 
 @app.post("/api/users/grant-single-access")
-async def grant_single_access(req: GrantSingleAccessRequest):
+async def grant_single_access(req: GrantSingleAccessRequest, user: dict = Depends(require_role("Coordinator"))):
     gmail = req.gmail.strip().lower()
     if not gmail or "@" not in gmail:
         return JSONResponse(
@@ -544,12 +783,12 @@ async def grant_single_access(req: GrantSingleAccessRequest):
 # ==============================================================
 
 @app.get("/api/students")
-def list_students():
+def list_students(user: dict = Depends(require_role("Coordinator", "Department", "Mentor"))):
     students = db.get_all_student_roster()
     return {"success": True, "count": len(students), "students": students}
 
 @app.get("/api/logs")
-def list_upload_logs():
+def list_upload_logs(user: dict = Depends(require_role("Coordinator"))):
     logs = db.get_upload_logs()
     return {"success": True, "count": len(logs), "logs": logs}
 
@@ -559,12 +798,12 @@ def list_upload_logs():
 # ==============================================================
 
 @app.get("/api/export/company-drives")
-def export_company_drives(format: str = "xlsx"):
+def export_company_drives(format: str = "xlsx", user: dict = Depends(require_role("Coordinator", "Department"))):
     drives = db.get_all_drives()
     return bulk_exporter.export_company_drives_data(drives, format_type=format)
 
 @app.get("/api/export/drive-results/{drive_id}")
-def export_drive_results(drive_id: str, format: str = "xlsx"):
+def export_drive_results(drive_id: str, format: str = "xlsx", user: dict = Depends(require_role("Coordinator", "Department"))):
     drive = db.get_drive(drive_id)
     if not drive:
         raise HTTPException(status_code=404, detail=f"Drive with ID '{drive_id}' was not found.")
@@ -572,12 +811,12 @@ def export_drive_results(drive_id: str, format: str = "xlsx"):
     return bulk_exporter.export_drive_results_data(results, drive_info=drive, format_type=format)
 
 @app.get("/api/export/student-roster")
-def export_student_roster(format: str = "xlsx"):
+def export_student_roster(format: str = "xlsx", user: dict = Depends(require_role("Coordinator", "Department"))):
     students = db.get_all_student_roster()
     return bulk_exporter.export_student_roster_data(students, format_type=format)
 
 @app.get("/api/export/user-access")
-def export_user_access(format: str = "xlsx"):
+def export_user_access(format: str = "xlsx", user: dict = Depends(require_role("Coordinator"))):
     users = db.get_all_users()
     return bulk_exporter.export_user_access_data(users, format_type=format)
 
@@ -591,7 +830,7 @@ class StudentApplyRequest(BaseModel):
     drive_id: str
 
 @app.get("/api/student/profile")
-async def get_student_profile(gmail: str):
+async def get_student_profile(gmail: str, user: dict = Depends(get_current_user)):
     """viewStudentProfile() — Retrieve a student's personal & academic profile information updated by coordinator."""
     profile = db.get_student_profile_by_email(gmail)
     if not profile:
@@ -612,13 +851,13 @@ async def get_student_profile(gmail: str):
     return {"success": True, "profile": profile}
 
 @app.get("/api/student/results")
-async def get_student_results(gmail: str):
+async def get_student_results(gmail: str, user: dict = Depends(get_current_user)):
     """viewRoundStatus() — Retrieve all evaluation results for a student across drives."""
     results = db.get_student_drive_results(gmail)
     return {"success": True, "results": results}
 
 @app.get("/api/student/applications")
-async def get_student_applications(gmail: str):
+async def get_student_applications(gmail: str, user: dict = Depends(get_current_user)):
     """viewJobApplication() — Retrieve all drives registered by student."""
     results = db.get_student_drive_results(gmail)
     apps = []
@@ -635,13 +874,13 @@ async def get_student_applications(gmail: str):
     return {"success": True, "applications": apps}
 
 @app.post("/api/student/apply")
-async def apply_student_drive(req: StudentApplyRequest):
+async def apply_student_drive(req: StudentApplyRequest, user: dict = Depends(get_current_user)):
     """applyJobApplication() — Apply student to a placement drive."""
     res = db.increment_student_drive_round(req.drive_id, req.gmail)
     return {"success": True, "message": "Successfully registered for drive", "registration": res}
 
 @app.get("/api/student/analysis")
-async def get_student_analysis(gmail: str):
+async def get_student_analysis(gmail: str, user: dict = Depends(get_current_user)):
     """viewAnalysis() — Performance & failure pattern analysis."""
     results = db.get_student_drive_results(gmail)
     patterns = intervention_service.analyse_student_patterns(results)
@@ -680,15 +919,8 @@ class InterventionActionRequest(BaseModel):
     notes: str = None
 
 
-def _requester(user_id: str, role: str, department: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="X-User-Id is required")
-    user = db.get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unknown user")
-    if role and role.strip().lower() != user["role"].strip().lower():
-        raise HTTPException(status_code=403, detail="User role does not match the authenticated account")
-    user["department"] = department or user.get("department") or "CSE"
+def _requester(user: dict):
+    """User is already authenticated and validated via JWT."""
     return user
 
 
@@ -710,22 +942,12 @@ def _visible_interventions(user: dict):
 
 
 @app.get("/api/interventions")
-async def list_interventions(
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
-):
-    user = _requester(x_user_id, x_user_role, x_department)
+async def list_interventions(user: dict = Depends(get_current_user)):
     return {"success": True, "interventions": _visible_interventions(user)}
 
 
 @app.get("/api/interventions/students")
-async def list_intervention_students(
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
-):
-    user = _requester(x_user_id, x_user_role, x_department)
+async def list_intervention_students(user: dict = Depends(get_current_user)):
     students = db.get_students_for_scope(user["uuid"], user["role"], user.get("department"))
     visible_interventions = db.get_interventions(student_gmails=[student["gmail"] for student in students])
     by_gmail = {}
@@ -740,11 +962,8 @@ async def list_intervention_students(
 @app.get("/api/interventions/{student_id}")
 async def get_student_interventions(
     student_id: str,
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
+    user: dict = Depends(get_current_user),
 ):
-    user = _requester(x_user_id, x_user_role, x_department)
     student = _scoped_student(user, student_id=student_id)
     return {
         "success": True,
@@ -757,11 +976,8 @@ async def get_student_interventions(
 @app.post("/api/interventions/generate")
 async def generate_intervention(
     request: InterventionGenerateRequest,
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
+    user: dict = Depends(get_current_user),
 ):
-    user = _requester(x_user_id, x_user_role, x_department)
     if user["role"].strip().lower() == "student":
         raise HTTPException(status_code=403, detail="Students cannot generate interventions")
     if not request.student_id and not request.gmail:
@@ -795,12 +1011,7 @@ async def generate_intervention(
 
 
 @app.post("/api/interventions/generate-all")
-async def generate_all_interventions(
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
-):
-    user = _requester(x_user_id, x_user_role, x_department)
+async def generate_all_interventions(user: dict = Depends(get_current_user)):
     if user["role"].strip().lower() == "student":
         raise HTTPException(status_code=403, detail="Students cannot generate interventions")
 
@@ -831,11 +1042,8 @@ async def generate_all_interventions(
 async def change_intervention_status(
     intervention_id: str,
     request: InterventionStatusRequest,
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
+    user: dict = Depends(get_current_user),
 ):
-    user = _requester(x_user_id, x_user_role, x_department)
     if user["role"].strip().lower() == "student":
         raise HTTPException(status_code=403, detail="Students cannot update intervention status")
     allowed = {"OPEN", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
@@ -853,11 +1061,8 @@ async def change_intervention_status(
 async def change_intervention_action(
     action_id: str,
     request: InterventionActionRequest,
-    x_user_id: str = Header(None),
-    x_user_role: str = Header(None),
-    x_department: str = Header(None),
+    user: dict = Depends(get_current_user),
 ):
-    user = _requester(x_user_id, x_user_role, x_department)
     if user["role"].strip().lower() == "student":
         raise HTTPException(status_code=403, detail="Students cannot update intervention actions")
     visible_action_ids = {
@@ -872,7 +1077,7 @@ async def change_intervention_action(
     return {"success": True, "action_id": action_id}
 
 @app.post("/api/student/resume-upload")
-async def upload_student_resume(file: UploadFile = File(...), gmail: str = Form("student@gmail.com")):
+async def upload_student_resume(file: UploadFile = File(...), gmail: str = Form("student@gmail.com"), user: dict = Depends(get_current_user)):
     """resumeUpload() — Upload student resume file."""
     filename = file.filename.lower()
     if not (filename.endswith(".pdf") or filename.endswith(".doc") or filename.endswith(".docx")):
@@ -893,7 +1098,7 @@ class MentorNoteUpdateRequest(BaseModel):
     content: str
 
 @app.get("/api/mentor/demo/mentees")
-async def get_mentor_demo_data():
+async def get_mentor_demo_data(user: dict = Depends(require_role("Mentor", "Coordinator"))):
     """Retrieve mentor's assigned mentees, placed list, interventions, and metrics dynamically from SQLite DB."""
     data = db.get_mentor_dashboard_data("mentor@gmail.com")
     return {
@@ -902,24 +1107,24 @@ async def get_mentor_demo_data():
     }
 
 @app.get("/api/mentor/notes")
-async def get_notes(student_id: str):
+async def get_notes(student_id: str, user: dict = Depends(require_role("Mentor", "Coordinator"))):
     notes = db.get_mentor_notes("demo-mentor", student_id)
     return {"success": True, "notes": notes}
 
 @app.post("/api/mentor/notes")
-async def create_note(note_req: MentorNoteRequest):
+async def create_note(note_req: MentorNoteRequest, user: dict = Depends(require_role("Mentor", "Coordinator"))):
     note = db.create_mentor_note("demo-mentor", note_req.student_id, note_req.content)
     return {"success": True, "note": note}
 
 @app.put("/api/mentor/notes/{note_id}")
-async def update_note(note_id: str, note_req: MentorNoteUpdateRequest):
+async def update_note(note_id: str, note_req: MentorNoteUpdateRequest, user: dict = Depends(require_role("Mentor", "Coordinator"))):
     note = db.update_mentor_note(note_id, note_req.content)
     if not note:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"success": False, "message": "Note not found"})
     return {"success": True, "note": note}
 
 @app.delete("/api/mentor/notes/{note_id}")
-async def delete_note(note_id: str):
+async def delete_note(note_id: str, user: dict = Depends(require_role("Mentor", "Coordinator"))):
     db.delete_mentor_note(note_id)
     return {"success": True, "message": "Note deleted successfully"}
 
@@ -929,7 +1134,7 @@ async def delete_note(note_id: str):
 # ==========================================
 
 @app.get("/api/department/dashboard")
-async def get_department_dashboard(dept: str = "CSE"):
+async def get_department_dashboard(dept: str = "CSE", user: dict = Depends(require_role("Department", "Coordinator"))):
     """Retrieve full department overview: students, mentors, placed stats, interventions, and metrics."""
     data = db.get_department_dashboard_data(dept)
     return {

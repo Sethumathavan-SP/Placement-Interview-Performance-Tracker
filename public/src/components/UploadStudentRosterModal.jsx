@@ -30,7 +30,7 @@ function UploadStudentRosterModal({ isOpen, onClose, onRosterUploaded }) {
             const formData = new FormData();
             formData.append('file', file);
 
-            const res = await fetch('/api/upload/student-roster', {
+            const res = await authFetch('/api/upload/student-roster', {
                 method: 'POST',
                 body: formData
             });
