@@ -89,6 +89,22 @@ def test_get_student_pattern_not_found(client):
     assert resp.status_code == 404
 
 
+def test_failure_analysis_overview_is_registered(client, db):
+    _, coord = _seed_test_data(db)
+
+    resp = client.get(
+        "/coordinator/analysis/overview",
+        headers={
+            "X-User-Id": coord.coordinator_id,
+            "X-User-Role": "placement_coordinator",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["total_students"] == 1
+    assert resp.json()["students_with_repeated_failures"] == 1
+
+
 MOCK_GROQ_RESPONSE = {
     "analysis": "Student consistently fails coding rounds due to weak DP skills.",
     "recommendations": [
